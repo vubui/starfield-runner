@@ -56,6 +56,11 @@ const COL = {
   textPrimary: '#ff2d95',
   textSecondary: '#00f0ff',
   combo: '#ffdd00',
+  missile: '#00ffaa',
+  missileGlow: '#00ffcc',
+  missileTrail: '#00ff88',
+  explosion: '#ff6600',
+  explosionInner: '#ffee00',
 };
 
 // --- State ---
@@ -64,9 +69,9 @@ let score = 0, highScore = 0, combo = 1, comboTimer = 0;
 let shipX = W / 2, shipY = H - 120;
 let shipVX = 0, shipInvincible = 0, lives = 3;
 let shakeX = 0, shakeY = 0, shakeMag = 0;
-let particles = [], asteroids = [], orbs = [], stars = [], gridOffset = 0;
+let particles = [], asteroids = [], orbs = [], stars = [], missiles = [], gridOffset = 0;
 let spawnTimer = 0, orbSpawnTimer = 0, difficulty = 1, frameCount = 0;
-let flashAlpha = 0;
+let flashAlpha = 0, missileCooldown = 0;
 
 // Input
 const keys = {};
@@ -75,6 +80,7 @@ window.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === ' ') e.preventDefault();
   if (state === 'menu' && (e.key === ' ' || e.key === 'Enter')) startGame();
   if (state === 'dead' && (e.key === ' ' || e.key === 'Enter')) startGame();
+  if (state === 'playing' && e.key === ' ') fireMissile();
 });
 window.addEventListener('keyup', e => { keys[e.key] = false; });
 
@@ -85,6 +91,7 @@ canvas.addEventListener('touchstart', e => {
   if (state === 'menu' || state === 'dead') { startGame(); return; }
   const rect = canvas.getBoundingClientRect();
   touchX = (e.touches[0].clientX - rect.left) / rect.width * W;
+  if (e.touches.length >= 2) fireMissile();
 });
 canvas.addEventListener('touchmove', e => {
   e.preventDefault();
@@ -111,9 +118,9 @@ function startGame() {
   state = 'playing';
   score = 0; combo = 1; comboTimer = 0; lives = 3;
   shipX = W / 2; shipVX = 0; shipInvincible = 0;
-  asteroids = []; orbs = []; particles = [];
+  asteroids = []; orbs = []; particles = []; missiles = [];
   spawnTimer = 0; orbSpawnTimer = 0; difficulty = 1;
-  flashAlpha = 0; shakeMag = 0; frameCount = 0;
+  flashAlpha = 0; shakeMag = 0; frameCount = 0; missileCooldown = 0;
 }
 
 // --- Particle system ---
@@ -145,6 +152,18 @@ function emitTrail(x, y) {
     color: colors[Math.floor(Math.random() * colors.length)],
     size: 1.5 + Math.random() * 2,
   });
+}
+
+function fireMissile() {
+  if (missileCooldown > 0) return;
+  missileCooldown = 0.3;
+  missiles.push({
+    x: shipX,
+    y: shipY - 20,
+    speed: 600,
+  });
+  // Muzzle flash particles
+  emitParticles(shipX, shipY - 22, 8, COL.missile, 2, 0.3, 2);
 }
 
 // --- Update ---
@@ -184,6 +203,9 @@ function update(dt) {
 
     // Invincibility
     if (shipInvincible > 0) shipInvincible -= dt;
+
+    // Missile cooldown
+    if (missileCooldown > 0) missileCooldown -= dt;
 
     // Combo decay
     if (comboTimer > 0) {
@@ -266,6 +288,65 @@ function update(dt) {
         emitParticles(o.x, o.y, 10, COL.combo, 2, 0.5, 1.5);
         orbs.splice(i, 1);
       }
+    }
+
+    // Update missiles
+    for (let i = missiles.length - 1; i >= 0; i--) {
+      const m = missiles[i];
+      m.y -= m.speed * dt;
+
+      // Missile trail
+      if (frameCount % 2 === 0) {
+        particles.push({
+          x: m.x + (Math.random() - 0.5) * 4,
+          y: m.y + 6,
+          vx: (Math.random() - 0.5) * 0.5,
+          vy: 1 + Math.random() * 2,
+          life: 0.2 + Math.random() * 0.15,
+          maxLife: 0.35,
+          color: Math.random() > 0.5 ? COL.missile : COL.missileTrail,
+          size: 1 + Math.random() * 1.5,
+        });
+      }
+
+      // Off screen
+      if (m.y < -20) { missiles.splice(i, 1); continue; }
+
+      // Missile-asteroid collision
+      let hit = false;
+      for (let j = asteroids.length - 1; j >= 0; j--) {
+        const a = asteroids[j];
+        const dx = m.x - a.x, dy = m.y - a.y;
+        if (Math.sqrt(dx * dx + dy * dy) < a.size + 4) {
+          // Explosion!
+          emitParticles(a.x, a.y, 25, COL.explosion, 4, 0.7, 3);
+          emitParticles(a.x, a.y, 15, COL.explosionInner, 3, 0.5, 2);
+          emitParticles(a.x, a.y, 10, COL.asteroidLight, 3.5, 0.6, 2.5);
+          emitParticles(a.x, a.y, 8, '#ffffff', 2.5, 0.3, 1.5);
+
+          // Score bonus
+          const points = Math.floor((15 + a.size) * combo);
+          score += points;
+          comboTimer = 2.5;
+          combo = Math.min(combo + 1, 20);
+
+          // Score popup particle
+          particles.push({
+            x: a.x, y: a.y,
+            vx: 0, vy: -1.5,
+            life: 1, maxLife: 1,
+            color: COL.combo,
+            size: 0,
+            text: '+' + points,
+          });
+
+          shakeMag = Math.max(shakeMag, 4);
+          asteroids.splice(j, 1);
+          hit = true;
+          break;
+        }
+      }
+      if (hit) missiles.splice(i, 1);
     }
   }
 
@@ -410,6 +491,38 @@ function draw() {
     ctx.restore();
   }
 
+  // Missiles
+  for (const m of missiles) {
+    // Glow
+    const mg = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, 14);
+    mg.addColorStop(0, 'rgba(0,255,170,0.5)');
+    mg.addColorStop(1, 'rgba(0,255,170,0)');
+    ctx.fillStyle = mg;
+    ctx.fillRect(m.x - 14, m.y - 14, 28, 28);
+
+    // Missile body
+    ctx.save();
+    ctx.shadowColor = COL.missileGlow;
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = COL.missile;
+    ctx.beginPath();
+    ctx.moveTo(m.x, m.y - 8);
+    ctx.lineTo(m.x - 2.5, m.y + 4);
+    ctx.lineTo(m.x + 2.5, m.y + 4);
+    ctx.closePath();
+    ctx.fill();
+
+    // Bright core
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(m.x, m.y - 6);
+    ctx.lineTo(m.x - 1, m.y + 2);
+    ctx.lineTo(m.x + 1, m.y + 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
   // Ship
   if (state === 'playing' || state === 'menu') {
     const drawShip = state === 'menu' ? W / 2 : shipX;
@@ -512,12 +625,21 @@ function drawParticles() {
   for (const p of particles) {
     const t = p.life / p.maxLife;
     ctx.globalAlpha = t;
-    ctx.fillStyle = p.color;
-    ctx.shadowColor = p.color;
-    ctx.shadowBlur = p.size * 2;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size * t, 0, Math.PI * 2);
-    ctx.fill();
+    if (p.text) {
+      ctx.font = 'bold 16px "Segoe UI", system-ui, sans-serif';
+      ctx.fillStyle = p.color;
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 8;
+      ctx.textAlign = 'center';
+      ctx.fillText(p.text, p.x, p.y);
+    } else {
+      ctx.fillStyle = p.color;
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = p.size * 2;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * t, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
   ctx.globalAlpha = 1;
   ctx.shadowBlur = 0;
@@ -602,7 +724,7 @@ function drawMenu() {
   ctx.font = '13px "Segoe UI", system-ui, sans-serif';
   ctx.fillStyle = 'rgba(168,85,247,0.7)';
   ctx.fillText('ARROW KEYS / WASD / TOUCH TO MOVE', W / 2, H * 0.56);
-  ctx.fillText('COLLECT ORBS \u2022 DODGE ASTEROIDS', W / 2, H * 0.60);
+  ctx.fillText('SPACE TO FIRE \u2022 COLLECT ORBS \u2022 DODGE ASTEROIDS', W / 2, H * 0.60);
 
   // High score
   if (highScore > 0) {
